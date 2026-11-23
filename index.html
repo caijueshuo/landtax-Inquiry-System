@@ -132,7 +132,7 @@ details ul,details ol{padding-left:18px;margin:8px 0;color:var(--sub);font-size:
    - 未填 key：走 WorkBuddy 预览代理（仅预览面板内有效，双击 file:// 时代理占位符不替换 → 在线搜索失效）
    - 填入自己的免费 key：直连腾讯官方服务，双击 file:// 打开也能在线搜索
    要换模式请改下面 TMAP_KEY 常量（或用页面内「设置Key」按钮生成自带 key 的新文件）。 */
-const TMAP_KEY = null;/*__TMAP_KEY__*/
+const TMAP_KEY = "3LEBZ-SZOLQ-CLJ5X-BDQM7-PGTKT-SLFNR";/*__TMAP_KEY__*/
 if(typeof TMAP_KEY==='string'&&TMAP_KEY.replace(/\s/g,'').length>=10){
   document.write('<scr'+'ipt charset="utf-8" src="https://map.qq.com/api/gljs?v=1.exp&libraries=service&key='+encodeURIComponent(TMAP_KEY.trim())+'"><\/scr'+'ipt>');
 }else{
