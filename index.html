@@ -126,6 +126,8 @@ details ul,details ol{padding-left:18px;margin:8px 0;color:var(--sub);font-size:
 /* ===== 发布版（读者查询）：隐藏边界校准 / 诊断 / 导出入口，界面精简 ===== */
 [data-act="set-key"],[data-act="self-test"],#hdrCoverage,
 .tabs [data-tab="boundary"],#pane-boundary,#pane-coverage{display:none !important}
+/* 发布版显示「地址搜索Key」使用说明（自用主文件默认隐藏该提示） */
+.reader-hint{display:block !important}
 </style>
 <script type="text/javascript">
 /* 腾讯地图接入模式：
@@ -153,6 +155,7 @@ if(typeof TMAP_KEY==='string'&&TMAP_KEY.replace(/\s/g,'').length>=10){
       <select id="dsSel" data-chg="dataset" style="width:190px"></select>
       <button class="btn sm" data-act="fit-all">全市总览</button>
       <button class="btn sm" data-act="set-key" title="填入腾讯地图免费key后，双击HTML也能在线搜索地址">设置Key</button>
+      <button class="btn sm" data-act="reader-key" title="填入自己的高德免费 Key 启用地址搜索（仅存本机浏览器）" id="readerKeyBtn">地址搜索Key</button>
       <button class="btn sm" data-act="self-test" title="检查当前在线地址服务是否正常">自检搜索</button>
     </div>
   </header>
@@ -174,6 +177,9 @@ if(typeof TMAP_KEY==='string'&&TMAP_KEY.replace(/\s/g,'').length>=10){
               <input type="text" id="addr" placeholder="如：无锡市梁溪区县前东街88号 / 阳光城市花园 / 江阴市环城南路">
               <div id="sug"></div>
             </div></div>
+            <div class="hint reader-hint" style="display:none;margin:-2px 0 8px;padding:7px 9px;border-radius:6px;background:#eff6ff;color:#1e40af;line-height:1.6">
+              <b>使用说明：</b>点右上角「<b>地址搜索Key</b>」填入自己免费申请的高德 Key 后，即可输入地址搜索查询，并使用<b>批量台账</b>判定。未填 Key 时，仍可在<b>地图上点选</b>位置判级。您填入的 Key 只保存在本机浏览器，不上传、仅供您本人使用。
+            </div>
             <div class="tools" style="margin-bottom:8px">
               <button class="btn primary" data-act="search">查询等级</button>
               <button class="btn" data-act="pick">地图点选</button>
@@ -479,6 +485,129 @@ function zonesOf(D){
 let map=null,baseLayer=null,zoneLayer=null,borderLayer=null,markerLayer=null,hiLayer=null,vertexLayer=null;
 let adminLayer=null,townLayer=null,townLabelLayer=null,roadRefLayer=null,townCellLayer=null;
 let geocoder=null,searcher=null,suggester=null,districtSvc=null;
+/* ============ 高德 Web 服务适配器（个人认证免费）============
+   腾讯已取消个人认证，WebServiceAPI 一律返回 105（须企业认证+5万商业授权）。
+   底图仍用腾讯 JS API GL（TMAP_KEY），地址检索改走高德 Web 服务（个人实名认证即可，免费额度）。
+   高德返回 GCJ-02，与腾讯底图坐标系一致，坐标可直接用。
+   适配器把高德接口包装成腾讯 service 的调用形状，geocode/reverse/selfTest 全部无需改动。
+   留空 AMAP_KEY 则回退到原腾讯 service。 */
+const AMAP_KEY = null;/*__AMAP_KEY__*/
+/* BYOK（Bring Your Own Key）：公开版不内置搜索 key，读者填自己的免费高德 key 即可用地址搜索。
+   读者 key 只存在读者自己浏览器的 localStorage（按站点隔离），不随文件走、不上传服务器。
+   内置 AMAP_KEY 供自用版使用；两者都为空时地址搜索不可用，只保留地图点选判级。 */
+const READER_KEY_STORE='caijue_reader_amap_key';
+function readerAmapKey(){try{return String(localStorage.getItem(READER_KEY_STORE)||'').trim();}catch(e){return '';}}
+function effectiveAmapKey(){
+  const builtin=(typeof AMAP_KEY==='string')?AMAP_KEY.trim():'';
+  return builtin.length>=10?builtin:readerAmapKey();
+}
+const AMAP_ON=()=>effectiveAmapKey().length>=10;
+const AMAP_BASE='https://restapi.amap.com/v3';
+function amapUrl(path,params){
+  const u=new URL(AMAP_BASE+path);
+  Object.keys(params||{}).forEach(k=>{if(params[k]!==''&&params[k]!=null)u.searchParams.set(k,params[k]);});
+  u.searchParams.set('key',effectiveAmapKey());
+  return u.toString();
+}
+async function amapFetch(path,params){
+  const r=await fetch(amapUrl(path,params),{cache:'no-store'});
+  if(!r.ok)throw new Error('amap http '+r.status);
+  return await r.json();
+}
+function amapLL(s){
+  if(!s)return null;
+  const p=String(s).split(',').map(Number);
+  return(isFinite(p[0])&&isFinite(p[1]))?{lng:p[0],lat:p[1]}:null;
+}
+/* 高德 level（文字）→ 腾讯数字 level/reliability，让门牌解析在 geoScore 里占优；
+   POI 结果固定带 quality 标记，避免挤掉精确门牌。 */
+function amapLevel(lv){
+  const s=String(lv||'');
+  /* 高德真实 level：门址 / 门牌号 / 楼层 / 楼宇 / 小区 / 道路 / 乡镇 / 区县…
+     「门址」是门牌精确定位，必须与「门牌」同级(level9)，否则精确门牌被 POI 挤掉。 */
+  if(/门址|门牌|楼层/.test(s))return{level:9,reliability:10};
+  if(/兴趣点|POI|楼宇|楼栋|小区|社区/.test(s))return{level:10,reliability:9};
+  if(/道路|路口/.test(s))return{level:9,reliability:8};
+  return{level:8,reliability:7};
+}
+class AmapGeocoder{
+  async getLocation(o){
+    const addr=String(o.address||'').trim();if(!addr)return{status:1};
+    try{
+      const j=await amapFetch('/geocode/geo',{address:addr,city:o.city||''});
+      if(String(j.status)!=='1'||!j.geocodes||!j.geocodes.length)return{status:1,info:j.info};
+      const g=j.geocodes[0],l=amapLL(g.location);if(!l)return{status:1};
+      const lv=amapLevel(g.level);
+      return{status:0,result:{location:{lat:l.lat,lng:l.lng},title:g.formatted_address||addr,
+        reliability:lv.reliability,level:lv.level,
+        address_components:{district:g.district||'',city:g.city||''},
+        ad_info:{district:g.district||'',city:g.city||'',adcode:String(g.adcode||'')}}};
+    }catch(e){return{status:1,info:String(e&&e.message||e)};}
+  }
+  async getAddress(o){
+    const l=coordOf(o&&o.location);if(!l)return null;
+    try{
+      const j=await amapFetch('/geocode/regeo',{location:l.lng+','+l.lat,extensions:'all'});
+      if(String(j.status)!=='1'||!j.regeocode)return null;
+      const x=j.regeocode,ac=x.addressComponent||{};
+      /* 高德真实返回：街道在 addressComponent.streetNumber.street（字符串），
+         不是腾讯的 address_reference.street[0].name；两种形状都兼容。 */
+      const st=(ac.street&&ac.street[0]&&ac.street[0].name)||(ac.streetNumber&&ac.streetNumber.street)||'';
+      return{status:0,result:{address:x.formatted_address||'',
+        address_component:{district:ac.district||'',city:ac.city||'',street:st},
+        address_reference:{town:{title:ac.township||''}},
+        ad_info:{adcode:String(ac.adcode||'')},
+        formatted_addresses:{recommend:x.formatted_address||''}}};
+    }catch(e){return null;}
+  }
+}
+/* 高德 POI 的 city 字段：inputtips 返回省市合并串（如「江苏省无锡市滨湖区」）或空数组，
+   place/text 返回城市名在 cityname、区县在 adname。这里归一化成纯城市名/区县名，
+   否则 geoScore 的城市一致性判断会把无锡 POI 误判成外地而扣 40 分。 */
+function amapPoiCity(p){
+  let c=Array.isArray(p.city)?'':String(p.city||'');
+  if(!c)c=String(p.cityname||'');
+  if(!c){const m=/([^省]{2,8}市)/.exec(String(p.district||''));if(m)c=m[1];}
+  return c;
+}
+function amapPoiDistrict(p){
+  let d=String(p.adname||'');
+  /* inputtips 无 adname，district 是「江苏省无锡市滨湖区」全串：取最后一个区/县名。
+     注意 exec + /g 只返回首个匹配，必须用 match 拿全部再取末尾。 */
+  if(!d){const m=/市([\u4e00-\u9fa5]{1,3}(?:区|县))$/.exec(String(p.district||''));d=m?m[1]:'';}
+  return d;
+}
+function amapPoi(p){
+  const l=amapLL(p.location);if(!l)return null;
+  const city=amapPoiCity(p),district=amapPoiDistrict(p);
+  return{location:{lat:l.lat,lng:l.lng},title:p.name||'',address:p.address||'',
+    city:city,
+    ad_info:{district:district,city:city,adcode:String(p.adcode||'')}};
+}
+class AmapSearch{
+  async searchRegion(o){
+    try{
+      const j=await amapFetch('/place/text',{keywords:o.keyword||'',city:o.cityName||'',offset:20,page:1});
+      if(String(j.status)!=='1'||!j.pois)return{status:1,data:[]};
+      return{status:0,data:j.pois.map(amapPoi).filter(Boolean)};
+    }catch(e){return{status:1,data:[]};}
+  }
+}
+class AmapSuggestion{
+  async getSuggestions(o){
+    try{
+      const j=await amapFetch('/assistant/inputtips',{keywords:o.keyword||'',city:o.region||'',offset:20});
+      if(String(j.status)!=='1'||!j.tips)return{status:1,data:[]};
+      return{status:0,data:j.tips.map(amapPoi).filter(Boolean)};
+    }catch(e){return{status:1,data:[]};}
+  }
+}
+function useAmapServices(){
+  geocoder=new AmapGeocoder();
+  searcher=new AmapSearch();
+  suggester=new AmapSuggestion();
+  districtSvc=null;/* 街道清单走内置 POLICY.towns / POLICY.townCells，判定用 reverse().town */
+}
 /* 免费自愈：旧预览标签页的 serviceHost 占位符未被替换（或 secret 指向已失效的旧端口实例），
    在线服务必失败。启动时 fetch 自己的 HTML 源码，取回服务端替换好的 serviceHost，
    重写全局配置并重建三路服务——无需申请 key，全程免费。file:// 下 fetch 会挂起，跳过。 */
@@ -486,6 +615,7 @@ let serviceSelfHealed=false,healInFlight=null;
 function hostBad(h){return /__WB_|_HTTP_PORT_|_TMAP_SECRET/.test(String(h||''));}
 async function selfHealService(){
   if(healInFlight)return healInFlight; /* 并发只跑一次 */
+  if(AMAP_ON())return; /* 高德模式不依赖腾讯代理 */
   healInFlight=(async()=>{
   if(typeof TMAP_KEY!=='undefined'&&TMAP_KEY&&String(TMAP_KEY).replace(/\s/g,'').length>=10)return; /* 自带 key 模式无需代理 */
   const cfg=window._TMapSecurityConfig;
@@ -503,10 +633,13 @@ async function selfHealService(){
     if(good&&TMap.service){
       /* 整体替换配置对象，避免旧对象被 SDK 冻结/只读导致赋值无效 */
       window._TMapSecurityConfig=Object.assign({},cfg,{serviceHost:good});
-      geocoder=new TMap.service.Geocoder();
-      searcher=new TMap.service.Search({pageSize:5});
-      suggester=new TMap.service.Suggestion({pageSize:20,region:POLICY.city,policy:1});
-      if(TMap.service.District)districtSvc=new TMap.service.District({polygon:2,maxOffset:100});
+      if(AMAP_ON())useAmapServices(); /* 高德模式不被自愈覆盖 */
+      else{
+        geocoder=new TMap.service.Geocoder();
+        searcher=new TMap.service.Search({pageSize:5});
+        suggester=new TMap.service.Suggestion({pageSize:20,region:POLICY.city,policy:1});
+        if(TMap.service.District)districtSvc=new TMap.service.District({polygon:2,maxOffset:100});
+      }
       serviceSelfHealed=true;
       console.log('service host self-healed',good);
     }
@@ -608,7 +741,8 @@ function initMap(){
     }
   });
   try{
-    if(TMap.service){
+    if(AMAP_ON())useAmapServices(); /* 高德模式：地址检索走高德 Web 服务，底图仍用腾讯 GL */
+    else if(TMap.service){
       geocoder=new TMap.service.Geocoder();
       searcher=new TMap.service.Search({pageSize:5});
       suggester=new TMap.service.Suggestion({pageSize:20,region:POLICY.city,policy:1});
@@ -616,6 +750,7 @@ function initMap(){
     }
   }catch(e){console.warn('service init',e);}
   selfHealService(); /* 若占位符未替换，自动从服务端取回正确 host 并重建服务（免费） */
+  renderReaderKeyBadge(); /* 显示读者自带 key 是否已启用 */
   setBuiltinBoundaries('启动默认');
   renderPanels();
   loadBoundaries(false);
@@ -1329,8 +1464,10 @@ async function selfTest(){
   try{const r=await withTimeout(geocoder.getLocation({address:'无锡市新吴区万达广场'}),5000);geoS=(r&&r.status===0&&r.result)?'命中 '+(r.result.title||'')+' '+num(r.result.reliability,0)+'/'+num(r.result.level,0):'无结果/失败';}catch(e){geoS='超时/失败';}
   rows.push('输入提示实测：'+(typeof sugN==='number'&&sugN>0?ok(true)+' 返回 '+sugN+' 条':ok(false)+' '+sugN));
   rows.push('地址解析实测：'+(/命中/.test(geoS)?ok(true)+' '+esc(geoS):ok(false)+' '+esc(geoS)));
-  const onLine=location.protocol!=='file:'&&!/__WB_/.test(host)&&geocoder&&typeof sugN==='number'&&sugN>0;
-  rows.push('<div style="margin-top:8px;padding:8px;border-radius:6px;background:'+(onLine?'#ecfdf5':'#fef2f2')+';color:'+(onLine?'#065f46':'#991b1b')+'"><b>结论：'+(onLine?'当前在线搜索可用。若仍搜不到，请确认已关掉旧标签页、用本标签页重新输入。':'当前在线搜索不可用。'+(location.protocol==='file:'?'请用 WorkBuddy 预览打开本文件，或点「设置Key」填入免费 key 后双击使用。':'请点「设置Key」填入免费 key。'))+'</b></div>');
+  if(AMAP_ON())rows.splice(2,0,'地址服务：<b style="color:#16a34a">高德 Web 服务（个人 key · 免费）</b>，底图仍用腾讯 GL');
+  const onLine=AMAP_ON()?(geocoder&&typeof sugN==='number'&&sugN>0)
+    :(location.protocol!=='file:'&&!/__WB_/.test(host)&&geocoder&&typeof sugN==='number'&&sugN>0);
+  rows.push('<div style="margin-top:8px;padding:8px;border-radius:6px;background:'+(onLine?'#ecfdf5':'#fef2f2')+';color:'+(onLine?'#065f46':'#991b1b')+'"><b>结论：'+(onLine?'当前在线搜索可用。若仍搜不到，请确认已关掉旧标签页、用本标签页重新输入。':'当前在线搜索不可用。'+(AMAP_ON()?'请检查高德 key 是否完成个人实名认证、Web 服务权限是否开通。':(location.protocol==='file:'?'请用 WorkBuddy 预览打开本文件，或点「设置Key」填入免费 key 后双击使用。':'请点「设置Key」填入免费 key。')))+'</b></div>');
   $('#resultBox').innerHTML='<div class="result"><div class="rh" style="background:#334155"><span>在线搜索服务自检</span></div><div class="rb" style="font-size:12px;line-height:1.9">'+rows.join('<br>')+'</div></div>';
 }
 async function doSearch(text){
@@ -1932,6 +2069,38 @@ async function fetchSource(){
     return await Promise.race([task,guard]);
   }catch(e){return null;}
 }
+/* 读者自带高德 key（BYOK）：只写本机 localStorage，不改源码、不上传。
+   填 key 后立即用高德适配器重建在线服务；清除则恢复原腾讯服务。
+   这样公开版无需内置任何搜索 key，读者用自己申请的免费 key 查自己的地址，属个人使用。 */
+function setReaderAmapKey(){
+  const cur=readerAmapKey();
+  const k=prompt('启用地址搜索：填入你自己的高德地图 Key（个人实名认证免费）\n\n'
+    +'· 只保存在你自己的浏览器里，不上传、不写进网页文件\n'
+    +'· 关掉网页再打开仍会保留；留空并确定 = 清除\n\n'
+    +'申请步骤：lbs.amap.com → 个人实名认证 → 创建应用 → 添加 Key → 服务平台选「Web服务」',cur);
+  if(k===null)return;
+  const v=String(k).trim();
+  if(v&&v.length<10){toast('Key 长度不对，请检查后重试');return;}
+  try{if(v)localStorage.setItem(READER_KEY_STORE,v);else localStorage.removeItem(READER_KEY_STORE);}
+  catch(e){toast('本机浏览器禁用了本地存储，无法保存 Key');return;}
+  try{
+    if(AMAP_ON())useAmapServices();
+    else if(TMap.service){
+      geocoder=new TMap.service.Geocoder();
+      searcher=new TMap.service.Search({pageSize:5});
+      suggester=new TMap.service.Suggestion({pageSize:20,region:POLICY.city,policy:1});
+      districtSvc=null;
+    }
+  }catch(e){console.warn('reader key rebuild',e);}
+  renderReaderKeyBadge();
+  toast(v?'已启用地址搜索（Key 仅存本机）':'已清除本机 Key，地址搜索已关闭');
+}
+function renderReaderKeyBadge(){
+  const b=$('#readerKeyBtn');if(!b)return;
+  const on=readerAmapKey().length>=10||((typeof AMAP_KEY==='string')&&AMAP_KEY.trim().length>=10);
+  b.textContent=on?'地址搜索Key ✓':'地址搜索Key';
+  b.style.color=on?'#16a34a':'';
+}
 /* 设置腾讯地图 key：写进源码常量并生成自带 key 的新 HTML。
    新文件双击打开时 SDK 直接带 key 连腾讯官方，不再依赖预览代理，在线搜索可用。 */
 async function setTmapKey(){
@@ -2080,6 +2249,7 @@ document.addEventListener('click',e=>{
     case 'tab': $$('.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===el.dataset.tab));$$('.pane').forEach(p=>p.classList.toggle('on',p.id==='pane-'+el.dataset.tab));break;
     case 'search': doSearch();break;
     case 'set-key': setTmapKey();break;
+    case 'reader-key': setReaderAmapKey();break;
     case 'self-test': selfTest();break;
     case 'pick': mode='pick';toast('点选模式：在地图上单击目标楼栋位置');break;
     case 'clear-result': $('#resultBox').innerHTML='';lastJudge=null;renderHighlight(null);if(markerLayer)markerLayer.setGeometries([]);break;
