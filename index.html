@@ -205,11 +205,12 @@ if(typeof TMAP_KEY==='string'&&TMAP_KEY.replace(/\s/g,'').length>=10){
           <div class="card">
             <h3>批量判定</h3>
             <div class="hint" style="margin-bottom:6px">每行一条：<span class="mono">名称,地址,土地面积㎡</span>；可只填地址。跨区县、跨市地址会自动识别税区。</div>
-            <textarea id="batchInput" rows="7" placeholder="阳光城市花园,无锡市梁溪区清扬路,120&#10;某新村,江阴市环城南路,90&#10;某花园,宜兴市宜城街道,80"></textarea>
+            <textarea id="batchInput" rows="7" placeholder="某新村,江阴市环城南路,90&#10;某花园,宜兴市宜城街道,80"></textarea>
             <div class="tools" style="margin-top:8px">
               <button class="btn primary" data-act="batch-run">开始批量判定</button>
               <button class="btn" data-act="batch-stop">中止</button>
               <button class="btn" data-act="batch-export">导出 CSV</button>
+              <button class="btn" data-act="batch-clear" title="清空本次批量判定结果（最近查询记录不受影响）">清空判定结果</button>
             </div>
             <div class="progress"><i id="batchBar"></i></div>
             <div class="hint" id="batchStat">等待开始</div>
@@ -1550,6 +1551,13 @@ async function runBatch(){
 function renderBatchRows(){
   $('#batchRows').innerHTML=batchResults.map(r=>`<tr><td title="${esc(r.addr)}">${esc(r.name)}</td><td>${esc(r.ds)}</td><td>${esc(r.grade)}</td><td>${esc(r.tax)}</td><td>${esc(r.year)}</td><td>${esc(r.basis)}</td><td><span class="badge ${r.cls||'gray'}">${esc(r.status)}</span></td></tr>`).join('');
 }
+/* 清空本次批量判定结果：只清结果表/进度/统计，不动最近查询历史（两者是不同功能） */
+function clearBatchResults(){
+  if(!batchResults.length&&!$('#batchRows').innerHTML){toast('判定结果已是空的');return;}
+  batchStop=true;batchResults=[];
+  $('#batchRows').innerHTML='';$('#batchBar').style.width='0';$('#batchStat').textContent='等待开始';
+  toast('批量判定结果已清空');
+}
 function exportCSV(){
   if(!batchResults.length){toast('暂无批量结果');return;}
   const head=['名称','地址','土地面积㎡','所属税区','土地等级','单位年税额(元/㎡·年)','年应纳税额(元)','判定依据','判定状态','经度(GCJ02)','纬度(GCJ02)','政策范围原文','依据文件','判定时间'];
@@ -2287,6 +2295,7 @@ document.addEventListener('click',e=>{
     case 'batch-run': runBatch();break;
     case 'batch-stop': batchStop=true;break;
     case 'batch-export': exportCSV();break;
+    case 'batch-clear': clearBatchResults();break;
     case 'import-geo': pickFile('.json,.geojson,application/json',t=>{try{importAreas(parseGeoJSON(t),'GeoJSON');}catch(err){toast('解析失败：'+err.message);}});break;
     case 'import-kml': pickFile('.kml,application/vnd.google-earth.kml+xml',t=>{try{importAreas(parseKML(t),'KML');}catch(err){toast('解析失败：'+err.message);}});break;
     case 'import-coords': $('#coordBox').style.display='block';break;
