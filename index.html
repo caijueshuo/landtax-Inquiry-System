@@ -2355,5 +2355,27 @@ document.addEventListener('change',e=>{
 });
 window.addEventListener('load',initMap);
 </script>
+
+<script>
+/* 财觉说 · 发布版轻量保护：禁止右键另存为与常见查看源码快捷键 */
+(function(){
+  function tip(){ try{console.info('%c无锡市城镇土地使用税等级查询系统 | 财觉说 编制 | 仅供辅助参考','color:#1e3a8a;font-weight:bold');}catch(e){} }
+  // 右键：仅拦截页面区域，输入框/文本域保留（不影响地址粘贴、结果复制）
+  document.addEventListener('contextmenu', function(e){
+    var t = e.target && e.target.tagName;
+    if (t !== 'INPUT' && t !== 'TEXTAREA') { e.preventDefault(); }
+  }, false);
+  // Ctrl+U / Ctrl+S / Ctrl+Shift+I/J/C 与 F12：阻止查看源码、另存为、开发者工具
+  document.addEventListener('keydown', function(e){
+    var k = e.keyCode || e.which, d = e.ctrlKey || e.metaKey, sh = e.shiftKey;
+    if (k === 123 || (d && (k === 85 || k === 83)) || (d && sh && (k === 73 || k === 74 || k === 67))) {
+      e.preventDefault(); e.stopPropagation(); tip();
+    }
+  }, false);
+  // 禁止拖拽页面元素（图片/链接）外带
+  document.addEventListener('dragstart', function(e){ e.preventDefault(); }, false);
+  tip();
+})();
+</script>
 </body>
 </html>
